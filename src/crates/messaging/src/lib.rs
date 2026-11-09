@@ -140,7 +140,9 @@ impl Messaging {
             return Ok(refused(&words::off(language(host.snapshot))));
         }
         // The sessions a message can go to, from this very snapshot.
-        self.clients.update_targets(sessions_targets(host.snapshot));
+        if params["name"] != "note_flight" {
+            self.clients.update_targets(sessions_targets(host.snapshot));
+        }
         let caller = serde_json::from_value::<Caller>(params["caller"].clone())
             .ok()
             .map(|mut caller| {
@@ -154,6 +156,12 @@ impl Messaging {
         let arguments = &params["arguments"];
         match params["name"].as_str().unwrap_or("") {
             "list_sessions" => Ok(self.list(caller.as_ref(), host)),
+            "note_flight" => {
+                let Some(caller) = caller else {
+                    return Ok(refused(&words::no_caller(language(host.snapshot))));
+                };
+                Ok(self.note_flight(&caller, arguments))
+            }
             "send_message" => {
                 let Some(caller) = caller else {
                     return Ok(refused(&words::no_caller(language(host.snapshot))));

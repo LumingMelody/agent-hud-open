@@ -576,7 +576,7 @@ fn an_uncertain_antigravity_send_is_not_reported_as_refused() {
 }
 
 #[test]
-fn the_group_lists_its_four_tools_only_while_it_is_on() {
+fn the_group_lists_its_tools_only_while_it_is_on() {
     assert_eq!(Messaging::tools(false), json!({"tools":[]}));
     let names = Messaging::tools(true)["tools"]
         .as_array()
@@ -590,12 +590,210 @@ fn the_group_lists_its_four_tools_only_while_it_is_on() {
             "list_sessions",
             "send_message",
             "start_session",
-            "get_message"
+            "get_message",
+            "note_flight"
         ]
     );
     for tool in Messaging::tools(true)["tools"].as_array().unwrap() {
         assert_eq!(tool["inputSchema"]["type"], "object");
         assert!(tool["description"].as_str().unwrap().len() > 80);
+    }
+}
+
+#[test]
+fn note_flight_draws_each_phase_without_delivery_or_a_journal() {
+    let mut world = World::on();
+    for to in ["grok", "antigravity", "codex", "claude", "deepseek"] {
+        let lane = format!("note:claude:{CLAUDE}|{to}:Job_1-x");
+        for (phase, from, destination, from_left, falls) in [
+            ("out", "claude", to, true, false),
+            ("back", to, "claude", false, false),
+            ("fail", "claude", to, true, true),
+        ] {
+            let answer = world.call(
+                Some(("claude", CLAUDE)),
+                "note_flight",
+                json!({"to":to,"phase":phase,"job":"Job_1-x"}),
+            );
+            assert_eq!(answer, json!({"ok":true,"lane":lane}));
+            assert_eq!(
+                world.flights.lock().unwrap().last().unwrap(),
+                &Flight {
+                    lane: lane.clone(),
+                    from: from.into(),
+                    to: destination.into(),
+                    from_left,
+                    arrives: false,
+                    falls,
+                }
+            );
+        }
+    }
+    assert!(!world
+        .fixture
+        .root
+        .join("data/messaging/messages.json")
+        .exists());
+    assert_eq!(world.messaging.journal.messages_mut().count(), 0);
+    assert!(world.codex.0.lock().unwrap().is_empty());
+    assert!(world.clients.known_receipts().unwrap().is_empty());
+    assert!(world.followed.lock().unwrap().is_empty());
+    assert!(!world.channel.join("prompts").exists());
+    assert!(!world.harness_channel.join("prompts").exists());
+    assert_eq!(
+        std::fs::read_dir(world.fixture.receipts()).unwrap().count(),
+        0
+    );
+    assert_eq!(world.transcripts.calls.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[test]
+fn note_flight_leaves_existing_messages_and_passes_unchanged() {
+    let mut world = World::on();
+    world.send(("claude", CLAUDE), CODEX, "Review this");
+    let path = world.fixture.root.join("data/messaging/messages.json");
+    let before = std::fs::read(&path).unwrap();
+    let messages = world
+        .messaging
+        .journal
+        .messages_mut()
+        .map(|message| message.clone())
+        .collect::<Vec<_>>();
+    for phase in ["out", "back", "fail"] {
+        let answer = world.call(
+            Some(("claude", CLAUDE)),
+            "note_flight",
+            json!({"to":"grok","phase":phase}),
+        );
+        assert_eq!(answer["ok"], true);
+    }
+    assert_eq!(std::fs::read(path).unwrap(), before);
+    assert_eq!(
+        world
+            .messaging
+            .journal
+            .messages_mut()
+            .map(|message| message.clone())
+            .collect::<Vec<_>>(),
+        messages
+    );
+    assert_eq!(world.codex.0.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn note_flight_uses_the_resolved_caller_and_job_or_turn_or_empty() {
+    let mut world = World::on();
+    world.harness();
+    let query = |_: &str, _: Value| -> Result<Value> { panic!("no transcript read") };
+    let host = Host {
+        snapshot: &world.snapshot,
+        query: &query,
+        conversations: None,
+    };
+    for (job, turn, token) in [
+        (Some("Job_1"), Some("turn-1"), "Job_1"),
+        (None, Some("turn-1"), "turn-1"),
+        (None, None, ""),
+    ] {
+        let mut arguments = json!({"to":"grok","phase":"out"});
+        if let Some(job) = job {
+            arguments["job"] = json!(job);
+        }
+        let answer = world
+            .messaging
+            .call(
+                &json!({"name":"note_flight","arguments":arguments,
+                "caller":{"client":"deepseek","sessionId":HARNESS_OWN,"turnId":turn}}),
+                &host,
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            answer["lane"],
+            format!("note:deepseek:{HARNESS}|grok:{token}")
+        );
+    }
+}
+
+#[test]
+fn note_flight_refuses_without_a_caller_or_when_off() {
+    let mut world = World::on();
+    let answer = world.call(None, "note_flight", json!({"to":"grok","phase":"out"}));
+    assert_eq!(answer["state"], "refused");
+    assert!(answer["reason"].as_str().unwrap().contains("anonymous"));
+    world.snapshot["settings"] = Preferences::default().settings();
+    let answer = world.call(
+        Some(("claude", CLAUDE)),
+        "note_flight",
+        json!({"to":"grok","phase":"out"}),
+    );
+    assert_eq!(answer["state"], "refused");
+    assert!(world.flights.lock().unwrap().is_empty());
+}
+
+#[test]
+fn note_flight_refuses_invalid_arguments_before_drawing() {
+    let mut world = World::on();
+    for (key, values) in [
+        (
+            "to",
+            vec![
+                Value::Null,
+                json!(42),
+                json!(""),
+                json!("a".repeat(41)),
+                json!("Grok"),
+                json!("a_b"),
+                json!("a|b"),
+                json!("a/b"),
+                json!("grok\n"),
+                json!("飞"),
+            ],
+        ),
+        (
+            "phase",
+            vec![
+                Value::Null,
+                json!(42),
+                json!(""),
+                json!("OUT"),
+                json!("done"),
+            ],
+        ),
+        (
+            "job",
+            vec![
+                Value::Null,
+                json!(42),
+                json!(""),
+                json!("a".repeat(65)),
+                json!("a:b"),
+                json!("a|b"),
+                json!("a b"),
+                json!("a\n"),
+                json!("飞"),
+            ],
+        ),
+    ] {
+        for value in values {
+            let mut arguments = json!({"to":"grok","phase":"out","job":"job-1"});
+            arguments[key] = value;
+            let answer = world.call(Some(("claude", CLAUDE)), "note_flight", arguments.clone());
+            assert_eq!(answer["state"], "refused", "{arguments}: {answer}");
+        }
+    }
+    for arguments in [json!({"phase":"out"}), json!({"to":"grok"}), json!({})] {
+        let answer = world.call(Some(("claude", CLAUDE)), "note_flight", arguments);
+        assert_eq!(answer["state"], "refused");
+    }
+    assert!(world.flights.lock().unwrap().is_empty());
+    for to in ["a".into(), "a0:-".repeat(10)] {
+        let answer = world.call(
+            Some(("claude", CLAUDE)),
+            "note_flight",
+            json!({"to":to,"phase":"out","job":"A_0-".repeat(16)}),
+        );
+        assert_eq!(answer["ok"], true);
     }
 }
 

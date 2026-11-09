@@ -43,6 +43,10 @@ fn startup_mode(state: tauri::State<'_, AppState>) -> AppState {
     *state.inner()
 }
 
+fn side_by_side(identifier: &str) -> bool {
+    identifier.ends_with(".dev")
+}
+
 #[derive(Clone, Default)]
 pub struct HostOptions {
     pub canonical_executable: Option<std::path::PathBuf>,
@@ -142,6 +146,7 @@ pub fn run_with_options(
             }
         })
         .setup(move |app| {
+            let side_by_side = side_by_side(&app.config().identifier);
             app.manage(system::System::new(app.config().identifier.clone()));
             app.manage(mcp_clients::Clients::default());
             app.manage(claude_plugin::ClaudePlugin::new(
@@ -150,9 +155,11 @@ pub fn run_with_options(
                     .and_then(|product| product.claude_plugin_paths()),
             )?);
             app.manage(deepseek_plugin::DeepSeekPlugin::new()?);
-            claude_plugin::repair_on_launch(app.handle());
-            deepseek_plugin::repair_on_launch(app.handle());
-            mcp_clients::repair_on_launch(app.handle());
+            if !side_by_side {
+                claude_plugin::repair_on_launch(app.handle());
+                deepseek_plugin::repair_on_launch(app.handle());
+                mcp_clients::repair_on_launch(app.handle());
+            }
             app.manage(picture::Pictures::default());
             let directory = agent_hud_runtime::local_tools_directory()?;
             let demo_data = directory.join("demo-run");
@@ -210,7 +217,7 @@ pub fn run_with_options(
                     data.clone(),
                     Some(data.join("local-network")),
                 )?;
-                if launch_at_login {
+                if launch_at_login && !side_by_side {
                     app.state::<system::System>().register_if_never_registered();
                 }
                 app.manage(service);
@@ -283,4 +290,25 @@ pub fn run_with_options(
                 auxiliary::show(app);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn side_by_side_only_for_dev_identifiers() {
+        assert!(side_by_side("app.agenthud.mac.dev"));
+        assert!(side_by_side("another.product.dev"));
+        for identifier in [
+            "app.agenthud.mac",
+            "app.dev.mac",
+            "app.agenthud.mac.developer",
+            "app.agenthud.mac.dev.extra",
+            "app.agenthud.mac.DEV",
+            "",
+        ] {
+            assert!(!side_by_side(identifier), "{identifier}");
+        }
+    }
 }

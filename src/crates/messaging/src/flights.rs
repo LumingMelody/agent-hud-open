@@ -3,6 +3,49 @@ use super::*;
 use serde::Serialize;
 
 impl Messaging {
+    /// Notes a flight for work delivered elsewhere, without sending words.
+    pub(crate) fn note_flight(&self, caller: &Caller, arguments: &Value) -> Value {
+        let Some(to) = arguments["to"].as_str().filter(|to| {
+            (1..=40).contains(&to.len())
+                && to
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b":-".contains(&c))
+        }) else {
+            return refused("to must match ^[a-z0-9:-]{1,40}$");
+        };
+        let phase = match arguments["phase"].as_str() {
+            Some(phase @ ("out" | "back" | "fail")) => phase,
+            _ => return refused("phase must be out, back or fail"),
+        };
+        let job = match arguments.get("job") {
+            None => caller.turn_id.as_deref().unwrap_or_default(),
+            Some(value) => match value.as_str().filter(|job| {
+                (1..=64).contains(&job.len())
+                    && job
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+            }) {
+                Some(job) => job,
+                None => return refused("job must match ^[A-Za-z0-9_-]{1,64}$"),
+            },
+        };
+        let lane = format!("note:{}:{}|{to}:{job}", caller.client, caller.session_id);
+        let (from, to) = if phase == "back" {
+            (to, caller.client.as_str())
+        } else {
+            (caller.client.as_str(), to)
+        };
+        (self.fly)(Flight {
+            lane: lane.clone(),
+            from: from.to_owned(),
+            to: to.to_owned(),
+            from_left: phase != "back",
+            arrives: false,
+            falls: phase == "fail",
+        });
+        json!({"ok":true,"lane":lane})
+    }
+
     /// Throws the plane back once for each message whose answer arrived: the
     /// collector's live facts say a turn ended (nothing is read while one
     /// runs), the message's own turn is found and ended, and its reply reads

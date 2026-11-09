@@ -1,4 +1,4 @@
-//! The four tools agents see, as the MCP relay lists them.
+//! The tools agents see, as the MCP relay lists them.
 use super::*;
 
 impl Messaging {
@@ -19,7 +19,10 @@ impl Messaging {
              "inputSchema":{"type":"object","properties":{"client":{"type":"string","enum":["claude","codex","antigravity"]},"folder":{"type":"string","description":"A folder from startFolders, or empty for none. Defaults to your session's project."},"text":{"type":"string","description":"The first message, whole."}},"required":["client","text"],"additionalProperties":false}},
             {"name":"get_message","readOnly":true,
              "description":"Read where a message you sent stands: queued, taken (the session took it and waits to go idle), started (its turn runs), done (with answer: the session's last reply in the turn your message started, whole), replied (the session answered with send_message: reply is that message's id, and its words come to your session as a new turn once you are idle), refused, expired or uncertain, with the reason. Reads only what Agent HUD already collected about the other session; it never asks or wakes it. Your own client may shorten a long result: Claude Code keeps about 50,000 characters in the conversation and saves a longer result to a file it names; Codex keeps about 10,000 tokens, the beginning and the end.",
-             "inputSchema":{"type":"object","properties":{"id":{"type":"string","description":"The message id send_message or start_session returned."}},"required":["id"],"additionalProperties":false}}
+             "inputSchema":{"type":"object","properties":{"id":{"type":"string","description":"The message id send_message or start_session returned."}},"required":["id"],"additionalProperties":false}},
+            {"name":"note_flight","readOnly":false,
+             "description":"Show a paper plane for work you send through another tool: out flies from your agent's mark to the target's, back returns, and fail falls halfway on the way out. Only a visual note: sends no message, starts no session, keeps no journal and counts no pass. Returns ok and the lane. Use the same job token for all phases of one job; without it the lane uses your turn, or empty when no turn is known.",
+             "inputSchema":{"type":"object","properties":{"to":{"type":"string","pattern":"^[a-z0-9:-]{1,40}$","description":"The target agent's source name, such as antigravity or grok, not a session id."},"phase":{"type":"string","enum":["out","back","fail"]},"job":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$","description":"Your token for this job, shared by its out, back and fail notes."}},"required":["to","phase"],"additionalProperties":false}}
         ]})
     }
 }
